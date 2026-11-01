@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   }
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'Gemini is not configured. Add GEMINI_API_KEY to your local environment and Vercel project settings.' });
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+  const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const body = req.body || {};
   const question = typeof body.question === 'string' ? body.question.trim() : '';
   if (!question) return res.status(400).json({ error: 'Please enter a question.' });
