@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Landmark, Building2, Handshake, ShieldCheck, Target, Bot, CheckCircle2, XCircle, AlertTriangle, LayoutDashboard, FilePlus2, FileText, BarChart3, UserCircle, LogOut, Search, Send, ArrowRight, ArrowLeft, Eye, Pencil, Plus, Trash2, Zap, ListChecks, MessageSquare, Clock, BadgeCheck, Menu, X, Mail, Phone, Info } from 'lucide-react';
-import { BRAND, DEPTS, CERTS, DOCS, LVL, fmt, dl, dt, daysLeft, subDays, load, save, seedTenders, seedUsers, check, bidsFor, analyze, explain, needs, askCopilot } from './data.js';
+import { BRAND, DEPTS, CERTS, DOCS, LVL, fmt, dl, dt, daysLeft, subDays, load, save, seedTenders, seedUsers, check, bidsFor, analyze } from './data.js';
 
 const go = (p) => { location.hash = p; };
 const useHash = () => {
@@ -654,11 +654,80 @@ function Browse({ ctx }) {
 
 function Detail({ id, ctx }) {
   const { tenders, user, bids, setB } = ctx, t = tenders.find((x) => x.id === id), inp = useRef(null);
-  const [msgs, setMsgs] = useState([]), [q, setQ] = useState(''), [busy, setBusy] = useState(false), [showM, setShowM] = useState(false);
+  const chatKey = `cb_copilot_conversations_${user?.username || 'guest'}_${id}`;
+  const loadedChatKey = useRef(chatKey);
+  const [conversations, setConversations] = useState(() => load(chatKey, []));
+  const [activeChatId, setActiveChatId] = useState(() => (load(chatKey, [])[0] || {}).id || null);
+  const [q, setQ] = useState(''), [busy, setBusy] = useState(false), [showM, setShowM] = useState(false);
+  const [chatError, setChatError] = useState('');
   const [amount, setAmount] = useState(''), [dchk, setDchk] = useState([]), [ok, setOk] = useState(false), [sub, setSub] = useState(null);
+  useEffect(() => {
+    const saved = load(chatKey, []);
+    setConversations(saved);
+    setActiveChatId((current) => saved.some((c) => c.id === current) ? current : ((saved[0] || {}).id || null));
+    setChatError('');
+  }, [chatKey]);
+  useEffect(() => {
+    if (loadedChatKey.current !== chatKey) { loadedChatKey.current = chatKey; return; }
+    save(chatKey, conversations);
+  }, [chatKey, conversations]);
   if (!t) return <p className="empty">Tender not found. <a href="#/bidder/browse">Back</a></p>;
+  const activeChat = conversations.find((c) => c.id === activeChatId);
+  const msgs = activeChat?.messages || [];
   const m = check(t.req, user), blockers = m.missing.filter((x) => !x.doc), mine = bids.find((b) => b.tenderId === t.id && b.username === user.username), days = Math.max(daysLeft(t.deadline), 0);
-  const say = async (u, fn) => { if (u) setMsgs((x) => [...x, { r: 'u', text: u }]); setBusy(true); const text = await fn(); setMsgs((x) => [...x, { r: 'a', text }]); setBusy(false); };
+  const newConversation = () => {
+    const chatId = `chat-${Date.now()}`;
+    const conversation = { id: chatId, title: 'New conversation', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [] };
+    setConversations((items) => [conversation, ...items].slice(0, 50));
+    setActiveChatId(chatId);
+    setChatError('');
+  };
+  const say = async (userText, question) => {
+    if (busy) return;
+    const chatId = activeChatId || `chat-${Date.now()}`;
+    const current = conversations.find((c) => c.id === chatId);
+    const priorMessages = current?.messages || [];
+    const title = current?.title && current.title !== 'New conversation' ? current.title : userText.trim().slice(0, 48) || 'Tender question';
+    const newUserMessage = { r: 'u', text: userText };
+    const newChat = {
+      id: chatId, title, createdAt: current?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(), messages: [...priorMessages, newUserMessage]
+    };
+    setActiveChatId(chatId);
+    setConversations((items) => [newChat, ...items.filter((c) => c.id !== chatId)].slice(0, 50));
+    setBusy(true);
+    setChatError('');
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question, tender: t,
+          profile: {
+            name: user.name || user.fullName || user.orgName || user.username,
+            years: user.years, projects: user.projects, turnover: user.turnover,
+            contractorClass: user.contractorClass, certs: user.certs || [], docs: user.docs || []
+          },
+          opportunityMatch: { pct: m.pct, met: m.met, missing: m.missing.map((x) => x.label) },
+          history: priorMessages.slice(-20).map((item) => ({ role: item.r === 'u' ? 'user' : 'model', text: item.text }))
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Gemini request failed (${response.status}).`);
+      const answer = payload.text || 'Gemini returned an empty answer. Please try again.';
+      setConversations((items) => items.map((c) => c.id === chatId
+        ? { ...c, updatedAt: new Date().toISOString(), messages: [...c.messages, { r: 'a', text: answer }] }
+        : c));
+    } catch (error) {
+      const message = error?.message || 'Unable to contact CivilBid Copilot. Please try again.';
+      setChatError(message);
+      setConversations((items) => items.map((c) => c.id === chatId
+        ? { ...c, updatedAt: new Date().toISOString(), messages: [...c.messages, { r: 'a', text: `I couldn't get an AI response. ${message}` }] }
+        : c));
+    } finally {
+      setBusy(false);
+    }
+  };
   const submit = (e) => { e.preventDefault(); const bid = { id: 'B-' + Date.now(), tenderId: t.id, username: user.username, name: user.name, amount: +amount / 100, met: m.met, missing: m.missing, pct: m.pct, date: new Date().toISOString() }; setB([bid, ...bids]); setSub(bid); };
   if (sub || mine) { const b = sub || mine; return <div className="panel center narrow"><CheckCircle2 size={48} color="#1f7a5a" /><h2>{sub ? 'Bid submitted' : 'You have already bid on this opportunity'}</h2><p>{t.title}</p><p className="big">{fmt(b.amount)}</p><p className="sub">Reference {b.id}. It now appears in the issuer's Bid Analysis, and it is not a legal bid.</p><a className="btn" href="#/bidder/browse">Back to opportunities</a></div>; }
   const matchPanel = <section className="panel match-panel"><div className="mp-top"><Ring score={m.pct} suffix="%" /><div><h3>Opportunity Match: {m.pct}%</h3><p className="sub">How well your profile fits the listed requirements.</p></div></div>
@@ -674,7 +743,35 @@ function Detail({ id, ctx }) {
       {showM && matchPanel}
       <section className="panel"><h3>Proceed to Bid</h3>{!showM ? <p className="sub">Check your Opportunity Match first.</p> : blockers.length ? <><button className="btn" disabled>Proceed to Bid</button><p className="sub">Please review these before bidding: {blockers.map((b) => b.label).join('; ')}.</p></> : <form className="form" onSubmit={submit}><label className="w2">Bid amount (₹ lakh)<input type="number" step="0.01" min="0.01" required value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`Estimate is ${(t.value * 100).toFixed(2)}`} /></label><fieldset className="w2"><legend>Required document checklist</legend><div className="chips">{t.req.docs.map((d) => <label key={d} className={`chip ${dchk.includes(d) ? 'on' : ''}`}><input type="checkbox" checked={dchk.includes(d)} onChange={() => setDchk(dchk.includes(d) ? dchk.filter((x) => x !== d) : [...dchk, d])} />{d}</label>)}</div></fieldset><label className="w2 check"><input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} />I confirm the details are accurate and I have the documents ready.</label><div className="w2"><button className="btn" disabled={!ok || dchk.length < t.req.docs.length || !amount}>Submit Bid</button>{(dchk.length < t.req.docs.length) && <span className="sub"> Tick every document to continue.</span>}</div></form>}</section>
     </div>
-    <aside className="assist panel"><h3><Bot size={18} /> CivilBid Copilot</h3><div className="qa"><button onClick={() => say('Explain in 30 seconds', () => explain(t))}><Zap size={14} /> Explain in 30 Seconds</button><button onClick={() => say('What do I need?', () => needs(t))}><ListChecks size={14} /> What Do I Need?</button><button onClick={() => { setShowM(true); say('Check my Opportunity Match', () => askCopilot('match', t, user)); }}><Target size={14} /> Check My Opportunity Match</button><button onClick={() => inp.current?.focus()}><MessageSquare size={14} /> Ask a Question</button></div>
-      <div className="msgs" aria-live="polite">{!msgs.length && <p className="sub">Pick a quick action or ask a question about this tender.</p>}{msgs.map((x, i) => <div key={i} className={`msg ${x.r}`}>{x.text}</div>)}{busy && <div className="msg a">Thinking…</div>}</div>
-      <form className="ask" onSubmit={(e) => { e.preventDefault(); if (q.trim()) { const s = q; setQ(''); say(s, () => askCopilot(s, t, user)); } }}><input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about this tender" aria-label="Ask a question" /><button className="btn sm" aria-label="Send"><Send size={14} /></button></form></aside></div></>);
+    <aside className="assist panel">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0 }}><Bot size={18} /> CivilBid Copilot</h3>
+        <button type="button" className="btn ghost sm" onClick={newConversation}>+ New chat</button>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '12px 0' }}>
+        <label htmlFor="copilot-history" className="sub" style={{ whiteSpace: 'nowrap' }}>Chat history</label>
+        <select id="copilot-history" value={activeChatId || ''} onChange={(e) => { setActiveChatId(e.target.value || null); setChatError(''); }} style={{ minWidth: 0, flex: 1, padding: '8px', borderRadius: 8, border: '1px solid #d5dde7', background: 'white' }}>
+          {!conversations.length && <option value="">No saved chats yet</option>}
+          {conversations.map((c) => <option key={c.id} value={c.id}>{c.title || 'Conversation'} · {new Date(c.updatedAt || c.createdAt).toLocaleDateString('en-IN')}</option>)}
+        </select>
+      </div>
+      <div className="qa">
+        <button onClick={() => say('Explain in 30 seconds', 'Explain this tender in plain language in about 30 seconds. Highlight the scope, estimated value, deadline, eligibility, and important caveats.')}><Zap size={14} /> Explain in 30 Seconds</button>
+        <button onClick={() => say('What do I need?', 'List the documents, certifications, experience, turnover, contractor category, registration, and other requirements for this tender.')}><ListChecks size={14} /> What Do I Need?</button>
+        <button onClick={() => { setShowM(true); say('Check my Opportunity Match', 'Assess my Opportunity Match using the provided profile and match results. Explain the main gaps and practical next steps; do not claim official eligibility.'); }}><Target size={14} /> Check My Opportunity Match</button>
+        <button onClick={() => inp.current?.focus()}><MessageSquare size={14} /> Ask a Question</button>
+      </div>
+      <div className="msgs" aria-live="polite">
+        {!msgs.length && <p className="sub">Ask Gemini about this tender. Your conversations are saved in this browser for this account and tender.</p>}
+        {msgs.map((x, i) => <div key={`${activeChatId}-${i}`} className={`msg ${x.r}`}>{x.text}</div>)}
+        {busy && <div className="msg a">Gemini is thinking…</div>}
+      </div>
+      {chatError && <p className="err" role="alert">{chatError}</p>}
+      <form className="ask" onSubmit={(e) => { e.preventDefault(); if (q.trim() && !busy) { const text = q.trim(); setQ(''); say(text, text); } }}>
+        <input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about this tender" aria-label="Ask a question" disabled={busy} />
+        <button className="btn sm" aria-label="Send" disabled={busy || !q.trim()}><Send size={14} /></button>
+      </form>
+      <p className="sub" style={{ fontSize: 11, marginTop: 8 }}>AI responses are advisory. Verify requirements against the official tender documents.</p>
+    </aside></div></>);
 }
+
