@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Landmark, Building2, Handshake, ShieldCheck, Target, Bot, CheckCircle2, XCircle, AlertTriangle, LayoutDashboard, FilePlus2, FileText, BarChart3, UserCircle, LogOut, Search, Send, ArrowRight, ArrowLeft, Eye, Pencil, Plus, Trash2, Zap, ListChecks, MessageSquare, Clock, BadgeCheck, Menu, X, Mail, Phone, Info } from 'lucide-react';
-import { BRAND, DEPTS, CERTS, DOCS, LVL, fmt, dl, dt, daysLeft, subDays, load, save, seedTenders, seedUsers, check, bidsFor, analyze } from './data.js';
+import { configured, supabase, fetchTenders, fetchBids, fetchBidCount, syncTenders, syncBids, fetchProfile, saveProfileData, signUpUser, signIn, signOut } from './store.js';
+import { BRAND, DEPTS, CERTS, DOCS, LVL, fmt, dl, dt, daysLeft, subDays, load, save, check, bidsFor, analyze } from './data.js';
 
 const go = (p) => { location.hash = p; };
 const useHash = () => {
@@ -25,35 +26,93 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 export default function App() {
   const h = useHash();
-  const [users, setU] = useState(() => load('cb_users', seedUsers).filter((u) => !['gov-demo', 'anita.sharma', 'org-demo', 'rohan.mehta', 'bidder-demo', 'sundaram.infra'].includes((u.username || '').toLowerCase())));
-  const [session, setS] = useState(() => { const saved = load('cb_session', null); return saved && saved.username ? saved : null; });
- const [tenders, setT] = useState(() => []);
-  const [bids, setB] = useState(() => load('cb_bids', []));
+  const [profile, setProfile] = useState(null);
+  const [session, setS] = useState(null);
+  const [tenders, setTState] = useState([]);
+  const [bids, setBState] = useState([]);
+  const [bidCount, setBidCount] = useState(0);
+  const [ready, setReady] = useState(false);
+  const [notice, setNotice] = useState('');
   const [dept, setDept] = useState(() => load('cb_dept', null));
-  useEffect(() => save('cb_users', users), [users]); useEffect(() => save('cb_session', session), [session]);
-  useEffect(() => save('cb_tenders', tenders), [tenders]); useEffect(() => save('cb_bids', bids), [bids]); useEffect(() => save('cb_dept', dept), [dept]);
-  const user = session && users.find((u) => u.username === session.username);
+  const refreshRef = useRef(null);
+  useEffect(() => save('cb_dept', dept), [dept]);
+
+  // Load live data from the database and keep it fresh (realtime + 30s fallback poll).
+  useEffect(() => {
+    if (!configured) { setReady(true); return undefined; }
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const [t, b, c] = await Promise.all([fetchTenders(), fetchBids(), fetchBidCount()]);
+        if (alive) { setTState(t); setBState(b); setBidCount(c); setNotice(''); }
+      } catch (e) { if (alive) setNotice('Could not load live data: ' + e.message); }
+    };
+    refreshRef.current = refresh;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (data.session?.user) {
+          const p = await fetchProfile(data.session.user.id);
+          if (alive && p) { setProfile(p); setS({ username: p.username, role: p.role, dept: p.role === 'gov' ? p.department : null }); }
+        }
+      } catch (e) { if (alive) setNotice('Could not restore your session: ' + e.message); }
+      await refresh();
+      if (alive) setReady(true);
+    })();
+    const channel = supabase.channel('civilbid-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tenders' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bids' }, refresh)
+      .subscribe();
+    const timer = setInterval(refresh, 30000);
+    return () => { alive = false; clearInterval(timer); supabase.removeChannel(channel); };
+  }, []);
+
+  const users = profile ? [profile] : [];
+  const setT = (next) => {
+    const prev = tenders; setTState(next);
+    syncTenders(prev, next, profile.id).catch((e) => { setNotice('Could not save tender: ' + e.message); refreshRef.current?.(); });
+  };
+  const setB = (next) => {
+    const prev = bids; setBState(next);
+    syncBids(prev, next, profile.id).then(() => refreshRef.current?.()).catch((e) => { setNotice('Could not save bid: ' + e.message); refreshRef.current?.(); });
+  };
+  const saveProfile = (patch) => {
+    setProfile({ ...profile, ...patch });
+    saveProfileData(profile.id, patch, profile).catch((e) => setNotice('Could not save profile: ' + e.message));
+  };
+  const user = session && profile;
   const [, a, b, c] = h.split('/');
   const authPg = b === 'login' || b === 'signup';
   let redirect = null;
-  if (a === 'app' && (!user || user.role === 'bidder')) redirect = '/choose';
+  if (!ready) redirect = null;
+  else if (a === 'app' && (!user || user.role === 'bidder')) redirect = '/choose';
   else if (a === 'bidder' && !authPg && (!user || user.role !== 'bidder')) redirect = '/bidder/login';
   else if (a === 'bidder' && !authPg && b !== 'interests' && !user.interests?.length) redirect = '/bidder/interests';
   else if (a === 'gov' && authPg && !dept) redirect = '/gov/dept';
   useEffect(() => { if (redirect) go(redirect); }, [redirect]);
   if (redirect) return null;
-  const ctx = { tenders, setT, bids, setB, session, user, users, setU };
+  if (!configured) return <SetupNeeded />;
+  if (!ready) return <div className="plain"><p style={{ padding: 32 }}>Loading live data…</p></div>;
+  const ctx = { tenders, setT, bids, setB, bidCount, session, user, users, saveProfile };
   const enter = (u) => { setS({ username: u.username, role: u.role, dept: u.role === 'gov' ? (u.department || dept) : null }); go(u.role === 'bidder' ? (u.interests?.length ? '/bidder/browse' : '/bidder/interests') : '/app/dashboard'); };
-  const login = (role, username, password) => {
-    const term = (username || '').trim().toLowerCase();
-    const u = users.find((x) => x.role === role && (x.username.toLowerCase() === term || (x.email && x.email.toLowerCase() === term)) && x.password === password);
-    if (!u) return false;
-    enter(u);
+  const login = async (role, username, password) => {
+    const authUser = await signIn(role, username, password);
+    if (!authUser) return false;
+    const p = await fetchProfile(authUser.id);
+    if (!p) return false;
+    setProfile(p); await refreshRef.current?.(); enter(p);
     return true;
   };
-  const signup = (u) => { if (users.some((x) => x.username.toLowerCase() === u.username.toLowerCase())) return 'That username is already taken.'; setU([...users, u]); enter(u); return ''; };
-  const out = () => { setS(null); go('/'); };
-  if (!a) return <Landing ctx={ctx} />;
+  const signup = async (u) => {
+    const r = await signUpUser(u);
+    if (r.error) return r.error;
+    const p = await fetchProfile(r.user.id);
+    if (!p) return 'Account created, but the profile could not be loaded. Please log in.';
+    setProfile(p); await refreshRef.current?.(); enter(p);
+    return '';
+  };
+  const out = async () => { await signOut(); setS(null); setProfile(null); go('/'); refreshRef.current?.(); };
+  if (!a) return <><Banner text={notice} /><Landing ctx={ctx} /></>;
   if (a === 'choose') return <Choose />;
   if (a === 'gov' && b === 'dept') return <DeptPick dept={dept} pick={(d) => { setDept(d); go('/gov/login'); }} />;
   if (authPg) return <Auth role={a} mode={b} dept={dept} login={login} signup={signup} />;
@@ -62,6 +121,10 @@ export default function App() {
   return <Landing ctx={ctx} />;
 }
 
+const Banner = ({ text }) => text ? <div role="alert" style={{ background: '#fdecea', color: '#8a1c13', padding: '8px 16px', fontSize: 14 }}>{text}</div> : null;
+function SetupNeeded() {
+  return <div className="plain"><main className="narrow wide"><h1>Backend not connected</h1><p className="lead2">Add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to your environment (Vercel: Project, Settings, Environment Variables), then redeploy. See the README.</p></main></div>;
+}
 const Logo = ({ light }) => <a href="#/" className={`logo ${light ? 'light' : ''}`}><span className="logo-mark"><ShieldCheck size={18} /></span>{BRAND}</a>;
 const Pill = ({ tone = 'gray', children }) => <span className={`pill ${tone}`}>{children}</span>;
 const statusTone = { Published: 'green', Draft: 'amber', Awarded: 'blue', Closed: 'gray' };
@@ -158,7 +221,7 @@ function Landing({ ctx }) {
 
         <aside className="hero-board" aria-label="Live tender overview">
           <div className="hb-head"><b>Live Tenders</b><a href="#live-tenders">View all <ArrowRight size={13} /></a></div>
-          <div className="hb-stats">{[['Open tenders', ctx.tenders.filter((t) => t.status === 'Published' && daysLeft(t.deadline) >= 0).length], ['Departments', new Set(ctx.tenders.map((t) => t.department)).size], ['Bids received', ctx.bids.length]].map(([l, v]) => <div key={l}><b>{v}</b><span>{l}</span></div>)}</div>
+          <div className="hb-stats">{[['Open tenders', ctx.tenders.filter((t) => t.status === 'Published' && daysLeft(t.deadline) >= 0).length], ['Departments', new Set(ctx.tenders.map((t) => t.department)).size], ['Bids received', ctx.bidCount]].map(([l, v]) => <div key={l}><b>{v}</b><span>{l}</span></div>)}</div>
           <div className="hb-list">{ctx.tenders.filter((t) => t.status === 'Published' && daysLeft(t.deadline) >= 0).sort((x, y) => new Date(x.deadline) - new Date(y.deadline)).slice(0, 4).map((t) => { const d = daysLeft(t.deadline), sc = analyze(t).score; return <a key={t.id} href="#live-tenders" className="hb-row"><span className="hb-ic"><FileText size={18} /></span><div><b>{t.title.length > 44 ? t.title.slice(0, 44) + '…' : t.title}</b><small>{t.department} · {t.location} · {fmt(t.value)}</small></div><div className="hb-end"><Pill tone={d <= 7 ? 'amber' : 'green'}>{d <= 7 ? `${d}d left` : 'Open'}</Pill><small>Health {sc}/100</small></div></a>; })}</div>
         </aside>
       </section>
@@ -476,7 +539,7 @@ function Auth({ role, mode, dept, login, signup }) {
   const [err, setErr] = useState('');
   const set = (k, x) => setV({ ...v, [k]: x });
   const tog = (k, x) => set(k, v[k].includes(x) ? v[k].filter((y) => y !== x) : [...v[k], x]);
-  const submit = (e) => { e.preventDefault(); if (su) { const m = signup({ ...v, phone: v.phone ? `${v.cc || '+91'} ${v.phone}` : v.phone, role, interests: [] }); if (m) setErr(m); } else if (!login(role, v.username, v.password)) setErr('Invalid username or password. Please verify your credentials and try again.'); };
+  const submit = async (e) => { e.preventDefault(); setErr(''); if (su) { const m = await signup({ ...v, phone: v.phone ? `${v.cc || '+91'} ${v.phone}` : v.phone, role, interests: [] }); if (m) setErr(m); } else if (!(await login(role, v.username, v.password))) setErr('Invalid username or password. Please verify your credentials and try again.'); };
   const field = ([k, l, ty = 'text']) => ty === 'certs' || ty === 'docs' ? <fieldset className="w2" key={k}><legend>{l}</legend><div className="chips">{(ty === 'certs' ? CERTS : DOCS).map((c) => <label key={c} className={`chip ${v[k].includes(c) ? 'on' : ''}`}><input type="checkbox" checked={v[k].includes(c)} onChange={() => tog(k, c)} />{c}</label>)}</div></fieldset>
     : ty === 'email' || ty === 'tel' ? (() => { const tel = ty === 'tel', ok = tel ? (v.phone || '').length >= ((CC.find((c) => c[0] === (v.cc || '+91')) || [])[2] || 8) : /^\S+@\S+\.\S+$/.test(v[k] || ''), done = v[k + 'Ok']; return <div className={`vfield ${tel ? '' : ''}`} key={k}><span className="vlabel">{l}</span><div className="vrow">{tel && <select className="cc" aria-label="Country code" value={v.cc || '+91'} onChange={(e) => setV({ ...v, cc: e.target.value, phone: '', phoneOk: false })}>{CC.map(([c, n]) => <option key={c} value={c}>{n} ({c})</option>)}</select>}<input required type={tel ? 'tel' : 'email'} inputMode={tel ? 'numeric' : 'email'} maxLength={tel ? (CC.find((c) => c[0] === (v.cc || '+91')) || [])[2] : undefined} placeholder={tel ? 'Mobile number' : 'name@example.com'} value={v[k] ?? ''} onChange={(e) => setV({ ...v, [k]: tel ? e.target.value.replace(/\D/g, '') : e.target.value, [k + 'Ok']: false })} />{done ? <span className="vok"><BadgeCheck size={18} /> Verified</span> : <button type="button" className="btn ghost sm vbtn" disabled={!ok} onClick={() => set(k + 'Ok', true)}>Verify</button>}</div></div>; })()
     : <label key={k} className={ty === 'area' ? 'w2' : ''}>{l}{ty === 'area' ? <textarea rows="2" required value={v[k] || ''} onChange={(e) => set(k, e.target.value)} /> : ty === 'dept' ? <select value={v[k]} onChange={(e) => set(k, e.target.value)}>{DEPTS.map((d) => <option key={d}>{d}</option>)}</select> : ty.startsWith('sel:') ? <select value={v[k] || ty.slice(4).split(',')[0]} onChange={(e) => set(k, e.target.value)}>{ty.slice(4).split(',').map((d) => <option key={d}>{d}</option>)}</select> : <input type={ty} min={ty === 'number' ? 0 : undefined} step={ty === 'number' ? 'any' : undefined} required value={v[k] ?? ''} onChange={(e) => set(k, e.target.value)} />}</label>;
@@ -570,7 +633,7 @@ function Create({ ctx, gov }) {
     works: f.works.map((w, i) => ({ ...w, no: w.no || String(i + 1), value: +w.value / 100 || 0, security: w.security ? +w.security / 100 : 0 })), value: f.works.reduce((s, w) => s + (+w.value || 0), 0) / 100, conditions: f.conditions.map((c) => c.trim()).filter(Boolean), status, published: status === 'Published' ? today() : null,
     req: { contractorCat: f.contractorCat, years: +f.years || 0, projects: +f.projects || 0, turnover: +f.turnover || 0, certs: f.certs, docs: f.docs, registration: f.registration, other: f.other } });
   const problems = [!f.title && 'Add a tender notice title', !f.deadline && 'Set the bid submission deadline', f.deadline && f.deadline < f.subStart && 'Deadline is before submission start', f.works.some((w) => !w.name || !(+w.value > 0)) && 'Every work needs a name and estimated cost'].filter(Boolean);
-  const finish = (status) => { const t = { ...build(status), id: 'CB-2026-' + Math.floor(200 + Math.random() * 700) }; setT([t, ...tenders]); setDone({ t, status }); };
+  const finish = (status) => { const t = { ...build(status), id: 'CB-' + new Date().getFullYear() + '-' + crypto.randomUUID().slice(0, 8).toUpperCase() }; setT([t, ...tenders]); setDone({ t, status }); };
   if (done) return <div className="panel center"><CheckCircle2 size={44} color="#1f7a5a" /><h2>{done.status === 'Published' ? 'Tender published' : 'Draft saved'}</h2><p>{done.t.id} · {done.t.title}</p><p>{done.status === 'Published' ? 'It is now visible to relevant bidders and ready to receive bids.' : 'You can publish it later from My Tenders.'}</p><div className="cta-row"><a className="btn" href="#/app/tenders">Go to My Tenders</a>{done.status === 'Published' && <a className="btn ghost" href="#/app/bids">Track bids</a>}</div></div>;
   const body = [
     <div className="form" key="0"><label className="w2">Tender notice title<input value={f.title} onChange={(e) => set('title', e.target.value)} placeholder="e.g. Repair and Painting of Residential Buildings, Modinagar" /></label>{inp('noticeNo', 'Tender notice number', 'text', { placeholder: 'e.g. 756/4A' })}{inp('issuedOn', 'Date of issue', 'date')}<label className="w2">Issuing office / organization<input value={f.office} onChange={(e) => set('office', e.target.value)} /></label>{inp('officer', 'Officer name and designation')}{inp('location', 'District / location')}<label>{gov ? 'Department' : 'Organization'}<input value={gov ? session.dept : user.orgName} readOnly /></label></div>,
@@ -612,7 +675,7 @@ function BidAnalysis({ ctx, mine }) {
   return (<><Head t="Bid Analysis" s="Compare bids and bidder readiness for each published tender."><select className="sel" value={t.id} onChange={(e) => { setTid(e.target.value); setSel(null); }}>{list.map((x) => <option key={x.id} value={x.id}>{x.id} · {x.title.slice(0, 44)}</option>)}</select></Head>
     <div className="kpis three"><div className="kpi blue"><b>{all.length}</b><span>Total bids received</span></div><div className="kpi green"><b>{ok}</b><span>Fully matched requirements</span></div><div className="kpi amber"><b>{all.length - ok}</b><span>With potential missing information</span></div></div>
     <div className="notice"><AlertTriangle size={16} /> CivilBid provides decision-support insights. Final procurement decisions must be made by authorized officials according to applicable rules and procedures. Rows marked Sample are fictional.</div>
-    <div className="two wide-l"><section className="panel flush"><div className="scroll"><table><thead><tr><th>Bidder</th><th>Bid amount</th><th>vs. estimate</th><th>Readiness</th></tr></thead><tbody>{[...all].sort((a, b) => a.amount - b.amount).map((b) => <tr key={b.id} className={sel === b.id ? 'sel' : ''} onClick={() => setSel(b.id)}><td><b>{b.name}</b><small>{b.sample ? 'Sample' : 'Submitted via CivilBid'}</small></td><td>{fmt(b.amount)}{b.amount === low && <Pill tone="blue">Lowest</Pill>}</td><td>{((b.amount / t.value - 1) * 100).toFixed(1)}%</td><td><div className="mini-bar"><i style={{ width: (b.pct ?? 100) + '%' }} className={b.ok ? 'green' : 'amber'} /></div><small>{b.ok ? 'All matched' : `${b.missing.length} to review`}</small></td></tr>)}</tbody></table></div></section>
+    <div className="two wide-l"><section className="panel flush"><div className="scroll"><table><thead><tr><th>Bidder</th><th>Bid amount</th><th>vs. estimate</th><th>Readiness</th></tr></thead><tbody>{[...all].sort((a, b) => a.amount - b.amount).map((b) => <tr key={b.id} className={sel === b.id ? 'sel' : ''} onClick={() => setSel(b.id)}><td><b>{b.name}</b><small>Submitted via CivilBid</small></td><td>{fmt(b.amount)}{b.amount === low && <Pill tone="blue">Lowest</Pill>}</td><td>{((b.amount / t.value - 1) * 100).toFixed(1)}%</td><td><div className="mini-bar"><i style={{ width: (b.pct ?? 100) + '%' }} className={b.ok ? 'green' : 'amber'} /></div><small>{b.ok ? 'All matched' : `${b.missing.length} to review`}</small></td></tr>)}</tbody></table></div></section>
       <section className="panel">{cur ? <><h3>{cur.name}</h3><p className="big">{fmt(cur.amount)}</p><Pill tone={cur.ok ? 'green' : 'amber'}>{cur.ok ? 'Requirements matched' : 'Information to review'}</Pill><h4>Requirements matched ({cur.met.length})</h4><ul className="ok-list">{cur.met.map((m) => <li key={m}><CheckCircle2 size={14} />{m}</li>)}</ul><h4>Missing information ({cur.missing.length})</h4>{cur.missing.length ? <ul className="no-list">{cur.missing.map((m) => <li key={m.label}><XCircle size={14} />{m.label}</li>)}</ul> : <p className="sub">None.</p>}<h4>AI observations</h4><ul>{cur.notes.map((n) => <li key={n}>{n}</li>)}</ul></> : <p className="empty">Select a bidder to see details.</p>}</section></div></>);
 }
 
@@ -628,7 +691,7 @@ function Analytics({ ctx, mine }) {
 }
 function Profile({ ctx, gov }) {
   const u = ctx.user, rows = gov ? [['Name', u.fullName], ['Department', u.department], ['Designation', u.designation], ['Email', u.email], ['Phone', u.phone], ['Office', u.address]] : [['Organization', u.orgName], ['Type', u.orgType], ['Contact', u.contact], ['Email', u.email], ['Phone', u.phone], ['Address', u.address]];
-  return <><Head t="Profile" /><section className="panel prof"><UserCircle size={56} /><dl>{rows.map(([k, v]) => <><dt key={k}>{k}</dt><dd>{v}</dd></>)}<dt>Username</dt><dd>{u.username}</dd></dl><button className="btn ghost" onClick={() => { if (confirm('Clear local application cache and sign out?')) { ['cb_users', 'cb_tenders', 'cb_bids', 'cb_session', 'cb_dept'].forEach((k) => localStorage.removeItem(k)); location.hash = '/'; location.reload(); } }}>Clear local cache</button></section></>;
+  return <><Head t="Profile" /><section className="panel prof"><UserCircle size={56} /><dl>{rows.map(([k, v]) => <><dt key={k}>{k}</dt><dd>{v}</dd></>)}<dt>Username</dt><dd>{u.username}</dd></dl><button className="btn ghost" onClick={async () => { if (confirm('Sign out and clear local preferences on this device? Your data stays safe in the database.')) { await signOut(); localStorage.removeItem('cb_dept'); location.hash = '/'; location.reload(); } }}>Sign out and clear local cache</button></section></>;
 }
 
 /* ---------- Bidder ---------- */
@@ -639,9 +702,9 @@ function BidderShell({ page, id, ctx, out }) {
       <main className="main">{page === 'interests' ? <Interests ctx={ctx} /> : page === 'tender' ? <Detail id={id} ctx={ctx} /> : <Browse ctx={ctx} />}</main></div></div>);
 }
 function Interests({ ctx }) {
-  const { user, users, setU } = ctx, [sel, setSel] = useState(user.interests || []);
+  const { user, saveProfile } = ctx, [sel, setSel] = useState(user.interests || []);
   const tog = (d) => setSel(sel.includes(d) ? sel.filter((x) => x !== d) : [...sel, d]);
-  return <div className="narrow wide"><h1>What opportunities are you interested in?</h1><p className="lead2">Select one or more departments. Opportunities from private organizations are always shown.</p><div className="dept-grid three">{DEPTS.map((d) => <button key={d} className={`dept ${sel.includes(d) ? 'on' : ''}`} onClick={() => tog(d)} aria-pressed={sel.includes(d)}><Landmark size={20} />{d}{sel.includes(d) && <CheckCircle2 size={18} className="tick" />}</button>)}</div><button className="btn lg" disabled={!sel.length} onClick={() => { setU(users.map((u) => (u.username === user.username ? { ...u, interests: sel } : u))); go('/bidder/browse'); }}>Show opportunities</button></div>;
+  return <div className="narrow wide"><h1>What opportunities are you interested in?</h1><p className="lead2">Select one or more departments. Opportunities from private organizations are always shown.</p><div className="dept-grid three">{DEPTS.map((d) => <button key={d} className={`dept ${sel.includes(d) ? 'on' : ''}`} onClick={() => tog(d)} aria-pressed={sel.includes(d)}><Landmark size={20} />{d}{sel.includes(d) && <CheckCircle2 size={18} className="tick" />}</button>)}</div><button className="btn lg" disabled={!sel.length} onClick={() => { saveProfile({ interests: sel }); go('/bidder/browse'); }}>Show opportunities</button></div>;
 }
 function Browse({ ctx }) {
   const { tenders, user } = ctx, [q, setQ] = useState(''), [who, setWho] = useState('All'), [cat, setCat] = useState('All');
