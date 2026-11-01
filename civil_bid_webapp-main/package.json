@@ -1,16 +1,23 @@
 {
-  "name": "civilbid-workspace",
+  "name": "civilbid",
   "private": true,
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
-    "dev": "npm --prefix civilbid run dev",
-    "host": "npm --prefix civilbid run host",
-    "open": "npm --prefix civilbid run open",
-    "build": "npm --prefix civilbid run build",
-    "preview": "npm --prefix civilbid run preview",
-    "start": "npm --prefix civilbid run dev"
+    "dev": "vite --host",
+    "host": "vite --host",
+    "open": "vite --host --open",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@supabase/supabase-js": "^2.45.0"
   },
   "devDependencies": {
-    "vite": "^6.4.5"
+    "@vitejs/plugin-react": "^4.3.3",
+    "vite": "^5.4.10"
   }
 }
