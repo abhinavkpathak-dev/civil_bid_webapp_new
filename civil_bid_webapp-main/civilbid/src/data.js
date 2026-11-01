@@ -48,3 +48,16 @@ export const needs = async (t) =>
 
 export const askCopilot = async (q, t, p = {}) =>
   callCivilBidAI(q, t, p);
+export function load(key, fallback) {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved !== null) return JSON.parse(saved);
+  } catch {}
+  return typeof fallback === 'function' ? fallback() : fallback;
+}
+
+export function save(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
