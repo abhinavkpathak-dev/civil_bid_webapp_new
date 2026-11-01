@@ -27,7 +27,7 @@ export default function App() {
   const h = useHash();
   const [users, setU] = useState(() => load('cb_users', seedUsers).filter((u) => !['gov-demo', 'anita.sharma', 'org-demo', 'rohan.mehta', 'bidder-demo', 'sundaram.infra'].includes((u.username || '').toLowerCase())));
   const [session, setS] = useState(() => { const saved = load('cb_session', null); return saved && saved.username ? saved : null; });
-  const [tenders, setT] = useState(() => load('cb_tenders', seedTenders));
+ const [tenders, setT] = useState(() => []);
   const [bids, setB] = useState(() => load('cb_bids', []));
   const [dept, setDept] = useState(() => load('cb_dept', null));
   useEffect(() => save('cb_users', users), [users]); useEffect(() => save('cb_session', session), [session]);
