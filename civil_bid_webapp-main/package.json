@@ -1,0 +1,16 @@
+{
+  "name": "civilbid-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npm --prefix civilbid run dev",
+    "host": "npm --prefix civilbid run host",
+    "open": "npm --prefix civilbid run open",
+    "build": "npm --prefix civilbid run build",
+    "preview": "npm --prefix civilbid run preview",
+    "start": "npm --prefix civilbid run dev"
+  },
+  "devDependencies": {
+    "vite": "^6.4.5"
+  }
+}
