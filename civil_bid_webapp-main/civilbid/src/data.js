@@ -61,3 +61,8 @@ export function save(key, value) {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {}
 }
+export const BRAND = {
+  name: 'CivilBid',
+  tagline: 'Smart Tender Intelligence',
+  description: 'Tender discovery, eligibility matching, and procurement assistance.',
+};
