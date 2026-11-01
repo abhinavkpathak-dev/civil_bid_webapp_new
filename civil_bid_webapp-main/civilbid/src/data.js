@@ -1,3 +1,4 @@
+
 /*
  * CivilBid data layer
  * Shared utilities, local storage, eligibility matching,
@@ -109,18 +110,6 @@ export function save(key, value) {
     console.error('Could not save data:', error);
   }
 }
-
-/*
- * Do not populate this list with fictional tender records.
- * Connect a verified tender API or database to display live tenders.
- */
-export const seedTenders = () => [];
-
-/*
- * Demo accounts have been disabled.
- * Authentication should use a secure backend in production.
- */
-export const seedUsers = () => [];
 
 /*
  * Eligibility matching.
