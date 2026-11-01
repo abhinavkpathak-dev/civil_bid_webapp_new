@@ -1,4 +1,3 @@
-
 /*
  * CivilBid data layer
  * Shared utilities, local storage, eligibility matching,
