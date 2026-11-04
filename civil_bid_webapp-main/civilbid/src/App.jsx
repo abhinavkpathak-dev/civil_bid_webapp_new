@@ -164,7 +164,7 @@ function Landing({ ctx }) {
           <a href="#about"><Info size={18} />About Us</a>
           <a href="#contact"><Mail size={18} />Contact Us</a>
         </nav>
-        <div className="drawer-foot"><a href="mailto:anshu@iiitg.com"><Mail size={15} /> anshu@iiitg.com</a><a href="tel:9123456780"><Phone size={15} /> 9123456780</a></div>
+        <div className="drawer-foot"><a href="mailto:a@iiitg.com"><Mail size={15} /> a@iiitg.com</a><a href="tel:9123456780"><Phone size={15} /> 9123456780</a></div>
       </aside>
       {/* Navigation - Seamless background, balanced role access */}
       <header className="topbar">
