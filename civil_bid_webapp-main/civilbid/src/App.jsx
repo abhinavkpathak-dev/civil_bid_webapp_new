@@ -455,7 +455,7 @@ function Landing({ ctx }) {
         <div className="about-grid">
           <div><span className="eyebrow">Contact Us</span><h2>We're here to help</h2></div>
           <div className="contact-cards">
-            <a href="mailto:anshu@iiitg.com" className="contact-card"><span><Mail size={20} /></span><div><small>Email</small><b>anshu@iiitg.com</b></div></a>
+            <a href="mailto:a@iiitg.com" className="contact-card"><span><Mail size={20} /></span><div><small>Email</small><b>a@iiitg.com</b></div></a>
             <a href="tel:9123456780" className="contact-card"><span><Phone size={20} /></span><div><small>Phone</small><b>9123456780</b></div></a>
           </div>
         </div>
